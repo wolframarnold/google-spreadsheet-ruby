@@ -2,3 +2,4 @@ experiment
 doc
 *~
 *.gem
+.idea
