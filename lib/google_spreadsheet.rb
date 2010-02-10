@@ -196,8 +196,7 @@ module GoogleSpreadsheet
           result = []
           for entry in doc.search("entry")
             title = as_utf8(entry.search("title").text)
-            url = as_utf8(entry.search(
-              "link[@rel='http://schemas.google.com/spreadsheets/2006#worksheetsfeed']")[0]["href"])
+            url = as_utf8(entry.search("content")[0]["src"])
             result.push(Spreadsheet.new(self, url, title))
           end
           return result
@@ -250,13 +249,13 @@ module GoogleSpreadsheet
         #   session.create_spreadsheet("My new sheet")
         def create_spreadsheet(
             title = "Untitled",
-            feed_url = "https://docs.google.com/feeds/documents/private/full")
+            feed_url = "https://docs.google.com/feeds/default/private/full")
           xml = <<-"EOS"
-            <atom:entry xmlns:atom="http://www.w3.org/2005/Atom" xmlns:docs="http://schemas.google.com/docs/2007">
-              <atom:category scheme="http://schemas.google.com/g/2005#kind"
-                  term="http://schemas.google.com/docs/2007#spreadsheet" label="spreadsheet"/>
-              <atom:title>#{h(title)}</atom:title>
-            </atom:entry>
+            <entry xmlns="http://www.w3.org/2005/Atom">
+              <category scheme="http://schemas.google.com/g/2005#kind"
+                  term="http://schemas.google.com/docs/2007#spreadsheet"/>
+              <title>#{h(title)}</title>
+            </entry>
           EOS
 
           doc = request(:post, feed_url, :data => xml, :auth => :writely)
@@ -275,6 +274,11 @@ module GoogleSpreadsheet
           else
             add_header = data ? {"Content-Type" => "application/atom+xml"} : {}
           end
+          
+          add_header['GData-Version'] ||= '3.0'
+          
+          #p add_header['GData-Version']
+
           response_type = params[:response_type] || :xml
           
           if @oauth_token
@@ -381,7 +385,7 @@ module GoogleSpreadsheet
         
         # URL of feed used in document list feed API.
         def document_feed_url
-          return "https://docs.google.com/feeds/documents/private/full/spreadsheet%3A#{self.key}"
+          return "https://docs.google.com/feeds/default/private/full/spreadsheet%3A#{self.key}"
         end
         
         # Creates copy of this spreadsheet with the given name.
@@ -390,7 +394,7 @@ module GoogleSpreadsheet
           get_url = "https://spreadsheets.google.com/feeds/download/spreadsheets/Export?key=#{key}&exportFormat=ods"
           ods = @session.request(:get, get_url, :response_type => :raw)
           
-          url = "https://docs.google.com/feeds/documents/private/full"
+          url = "https://docs.google.com/feeds/default/private/full"
           header = {
             "Content-Type" => "application/x-vnd.oasis.opendocument.spreadsheet",
             "Slug" => URI.encode(new_name),
@@ -687,8 +691,8 @@ module GoogleSpreadsheet
               </entry>
             EOS
             
-            @session.request(:put, edit_url, :data => xml)
-            
+            @session.request(:put, edit_url, :data => xml, :header => {'If-Match' => '*', "Content-Type" => "application/atom+xml"})
+
             @meta_modified = false
             sent = true
             
@@ -703,12 +707,18 @@ module GoogleSpreadsheet
             cols = @modified.map(){ |r, c| c }
             url = "#{@cells_feed_url}?return-empty=true&min-row=#{rows.min}&max-row=#{rows.max}" +
               "&min-col=#{cols.min}&max-col=#{cols.max}"
-            doc = @session.request(:get, url)
+            doc = @session.request(:get, url, :header => {'GData-Version' => '1'})
+
+            #puts doc.to_s
+            #puts @cells_feed_url
+
             for entry in doc.search("entry")
+              #p entry
               row = entry.search("gs:cell")[0]["row"].to_i()
               col = entry.search("gs:cell")[0]["col"].to_i()
               cell_entries[[row, col]] = entry
             end
+
             
             # Updates cell values using batch operation.
             # If the data is large, we split it into multiple operations, otherwise batch may fail.
@@ -727,8 +737,9 @@ module GoogleSpreadsheet
                 edit_url = entry.search("link[@rel='edit']")[0]["href"]
                 xml << <<-EOS
                   <entry>
-                    <batch:id>#{h(row)},#{h(col)}</batch:id>
+                    <batch:id>#{h(row)} #{h(col)}</batch:id>
                     <batch:operation type="update"/>
+                    <title>#{h(row)} #{h(col)}</title>
                     <id>#{h(id)}</id>
                     <link rel="edit" type="application/atom+xml"
                       href="#{h(edit_url)}"/>
@@ -739,8 +750,10 @@ module GoogleSpreadsheet
               xml << <<-"EOS"
                 </feed>
               EOS
+              
+              #puts xml
             
-              result = @session.request(:post, "#{@cells_feed_url}/batch", :data => xml)
+              result = @session.request(:post, "#{@cells_feed_url}/batch", :data => xml, :header => {'GData-Version' => '1', "Content-Type" => "application/atom+xml"})
               for entry in result.search("atom:entry")
                 interrupted = entry.search("batch:interrupted")[0]
                 if interrupted
